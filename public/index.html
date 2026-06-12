@@ -1,0 +1,348 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Game Leaderboard — Real-Time Dashboard</title>
+<meta name="description" content="Redis-powered game leaderboard with atomic operations and real-time updates">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+*,*::before,*::after{margin:0;padding:0;box-sizing:border-box}
+:root{
+  --bg-primary:#0a0e1a;--bg-secondary:#111827;--bg-card:rgba(17,24,39,.7);
+  --glass:rgba(255,255,255,.04);--glass-border:rgba(255,255,255,.08);
+  --accent:#6366f1;--accent-glow:rgba(99,102,241,.25);
+  --green:#10b981;--green-glow:rgba(16,185,129,.2);
+  --amber:#f59e0b;--red:#ef4444;--cyan:#12a6c0;
+  --text-primary:#f1f5f9;--text-secondary:#94a3b8;--text-muted:#64748b;
+  --radius:14px;--radius-sm:10px;
+}
+html{font-family:'Inter',system-ui,sans-serif;background:var(--bg-primary);color:var(--text-primary);scroll-behavior:smooth}
+body{min-height:100vh;overflow-x:hidden;position:relative}
+body::before{content:'';position:fixed;inset:0;background:radial-gradient(ellipse 80% 60% at 50% -20%,rgba(99,102,241,.12),transparent 70%),radial-gradient(ellipse 60% 50% at 80% 100%,rgba(6,182,212,.08),transparent 60%);pointer-events:none;z-index:0}
+
+/* Layout */
+.app{position:relative;z-index:1;max-width:1280px;margin:0 auto;padding:24px 20px 60px}
+header{text-align:center;margin-bottom:40px;padding-top:20px}
+header h1{font-size:2.4rem;font-weight:800;background:linear-gradient(135deg,#f1f5f9,#6366f1,#06b6d4);-webkit-background-clip:text;-webkit-text-fill-color:transparent;letter-spacing:-.02em}
+header p{color:var(--text-secondary);margin-top:6px;font-size:.95rem}
+.status-dot{display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--green);margin-right:6px;animation:pulse-dot 2s infinite}
+@keyframes pulse-dot{0%,100%{box-shadow:0 0 0 0 var(--green-glow)}50%{box-shadow:0 0 0 6px transparent}}
+
+/* Grid */
+.grid{display:grid;gap:20px}
+.grid-main{grid-template-columns:1fr 380px}
+@media(max-width:900px){.grid-main{grid-template-columns:1fr}}
+
+/* Cards */
+.card{background:var(--bg-card);border:1px solid var(--glass-border);border-radius:var(--radius);backdrop-filter:blur(20px);padding:24px;transition:border-color .3s,box-shadow .3s}
+.card:hover{border-color:rgba(99,102,241,.2);box-shadow:0 0 30px rgba(99,102,241,.06)}
+.card-title{font-size:1rem;font-weight:600;color:var(--text-secondary);text-transform:uppercase;letter-spacing:.06em;margin-bottom:16px;display:flex;align-items:center;gap:8px}
+.card-title .icon{font-size:1.1rem}
+
+/* Stats row */
+.stats-row{display:grid;grid-template-columns:repeat(4,1fr);gap:16px;margin-bottom:24px}
+@media(max-width:700px){.stats-row{grid-template-columns:repeat(2,1fr)}}
+.stat-card{background:var(--glass);border:1px solid var(--glass-border);border-radius:var(--radius-sm);padding:18px 16px;text-align:center;position:relative;overflow:hidden}
+.stat-card::before{content:'';position:absolute;top:0;left:0;right:0;height:2px}
+.stat-card:nth-child(1)::before{background:linear-gradient(90deg,var(--accent),var(--cyan))}
+.stat-card:nth-child(2)::before{background:linear-gradient(90deg,var(--green),#34d399)}
+.stat-card:nth-child(3)::before{background:linear-gradient(90deg,var(--amber),#fbbf24)}
+.stat-card:nth-child(4)::before{background:linear-gradient(90deg,var(--cyan),#22d3ee)}
+.stat-value{font-size:1.8rem;font-weight:800;font-variant-numeric:tabular-nums}
+.stat-label{font-size:.75rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:.08em;margin-top:4px}
+
+/* Leaderboard table */
+.lb-table{width:100%}
+.lb-row{display:grid;grid-template-columns:50px 1fr 120px 100px;align-items:center;padding:12px 14px;border-radius:var(--radius-sm);transition:background .2s;gap:8px}
+.lb-row:hover{background:var(--glass)}
+.lb-row.header{color:var(--text-muted);font-size:.75rem;text-transform:uppercase;letter-spacing:.08em;font-weight:600}
+.lb-rank{font-weight:700;font-size:1rem;text-align:center}
+.lb-rank.gold{color:#fbbf24}.lb-rank.silver{color:#cbd5e1}.lb-rank.bronze{color:#d97706}
+.lb-name{font-weight:500;display:flex;align-items:center;gap:10px}
+.lb-avatar{width:32px;height:32px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:.8rem;color:#fff;flex-shrink:0}
+.lb-score{font-family:'JetBrains Mono',monospace;font-weight:600;text-align:right;color:var(--green)}
+.lb-change{text-align:right;font-size:.85rem;font-family:'JetBrains Mono',monospace}
+.lb-change.up{color:var(--green)}.lb-change.down{color:var(--red)}
+.empty-state{text-align:center;color:var(--text-muted);padding:40px 0;font-size:.95rem}
+
+/* Event feed */
+.event-feed{max-height:420px;overflow-y:auto;scrollbar-width:thin;scrollbar-color:var(--glass-border) transparent}
+.event-item{padding:12px 14px;border-left:3px solid var(--glass-border);margin-bottom:8px;border-radius:0 var(--radius-sm) var(--radius-sm) 0;background:var(--glass);animation:slideIn .3s ease-out}
+.event-item.leaderboard_updated{border-left-color:var(--accent)}
+.event-item.game_submission{border-left-color:var(--green)}
+.event-item.session_created{border-left-color:var(--cyan)}
+.event-type{font-size:.7rem;text-transform:uppercase;letter-spacing:.06em;color:var(--text-muted);font-weight:600;margin-bottom:4px}
+.event-body{font-size:.85rem;color:var(--text-secondary)}
+.event-time{font-size:.7rem;color:var(--text-muted);margin-top:4px;font-family:'JetBrains Mono',monospace}
+@keyframes slideIn{from{opacity:0;transform:translateX(-10px)}to{opacity:1;transform:translateX(0)}}
+
+/* Forms */
+.form-section{margin-bottom:20px}
+.form-section:last-child{margin-bottom:0}
+.form-section h3{font-size:.85rem;font-weight:600;color:var(--text-secondary);margin-bottom:10px}
+.form-grid{display:grid;gap:10px}
+.form-grid.cols-2{grid-template-columns:1fr 1fr}
+.input-group{display:flex;flex-direction:column;gap:4px}
+.input-group label{font-size:.7rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:.06em;font-weight:600}
+input,select{background:var(--glass);border:1px solid var(--glass-border);border-radius:8px;padding:10px 12px;color:var(--text-primary);font-family:inherit;font-size:.85rem;transition:border-color .2s;outline:none}
+input:focus,select:focus{border-color:var(--accent)}
+input::placeholder{color:var(--text-muted)}
+option{background:var(--bg-secondary)}
+.btn{padding:10px 18px;border:none;border-radius:8px;font-family:inherit;font-size:.85rem;font-weight:600;cursor:pointer;transition:all .2s;text-transform:uppercase;letter-spacing:.04em}
+.btn-primary{background:linear-gradient(135deg,var(--accent),#818cf8);color:#fff}
+.btn-primary:hover{box-shadow:0 4px 20px var(--accent-glow);transform:translateY(-1px)}
+.btn-success{background:linear-gradient(135deg,var(--green),#34d399);color:#fff}
+.btn-success:hover{box-shadow:0 4px 20px var(--green-glow);transform:translateY(-1px)}
+.btn-amber{background:linear-gradient(135deg,var(--amber),#fbbf24);color:#1a1a2e}
+.btn-amber:hover{transform:translateY(-1px)}
+.btn:active{transform:translateY(0)}
+.btn-row{display:flex;gap:8px;margin-top:6px}
+
+/* Toast */
+.toast-container{position:fixed;bottom:24px;right:24px;z-index:999;display:flex;flex-direction:column;gap:8px}
+.toast{padding:12px 20px;border-radius:var(--radius-sm);font-size:.85rem;font-weight:500;color:#fff;animation:toastIn .3s ease-out;backdrop-filter:blur(12px)}
+.toast.success{background:rgba(16,185,129,.9)}.toast.error{background:rgba(239,68,68,.9)}.toast.info{background:rgba(99,102,241,.9)}
+@keyframes toastIn{from{opacity:0;transform:translateY(12px)}to{opacity:1;transform:translateY(0)}}
+
+/* Scrollbar */
+::-webkit-scrollbar{width:5px}::-webkit-scrollbar-track{background:transparent}::-webkit-scrollbar-thumb{background:var(--glass-border);border-radius:10px}
+</style>
+</head>
+<body>
+<div class="app">
+  <header>
+    <h1>⚡ Game Leaderboard</h1>
+    <p><span class="status-dot"></span>Real-Time Dashboard &mdash; Redis Powered</p>
+  </header>
+
+  <!-- Stats -->
+  <div class="stats-row" id="stats-row">
+    <div class="stat-card"><div class="stat-value" id="stat-players">0</div><div class="stat-label">Players</div></div>
+    <div class="stat-card"><div class="stat-value" id="stat-top-score">0</div><div class="stat-label">Top Score</div></div>
+    <div class="stat-card"><div class="stat-value" id="stat-events">0</div><div class="stat-label">Events</div></div>
+    <div class="stat-card"><div class="stat-value" id="stat-sessions">0</div><div class="stat-label">Sessions</div></div>
+  </div>
+
+  <!-- Main Grid -->
+  <div class="grid grid-main">
+    <!-- Left: Leaderboard + Controls -->
+    <div style="display:flex;flex-direction:column;gap:20px">
+      <!-- Leaderboard -->
+      <div class="card">
+        <div class="card-title"><span class="icon">🏆</span> Leaderboard — Top 20</div>
+        <div class="lb-table">
+          <div class="lb-row header"><div>Rank</div><div>Player</div><div style="text-align:right">Score</div><div style="text-align:right">Change</div></div>
+          <div id="leaderboard-body"><div class="empty-state">No players yet — add scores below!</div></div>
+        </div>
+      </div>
+
+      <!-- Actions -->
+      <div class="card">
+        <div class="card-title"><span class="icon">🎮</span> Actions</div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:20px">
+          <!-- Update Score -->
+          <div class="form-section">
+            <h3>Update Score</h3>
+            <div class="form-grid">
+              <div class="input-group"><label>Player ID</label><input id="score-player" placeholder="e.g. player1"></div>
+              <div class="input-group"><label>Points</label><input id="score-points" type="number" placeholder="e.g. 100" value="100"></div>
+            </div>
+            <div class="btn-row"><button class="btn btn-primary" onclick="submitScore()">Add Score</button></div>
+          </div>
+          <!-- Create Session -->
+          <div class="form-section">
+            <h3>Create Session</h3>
+            <div class="form-grid">
+              <div class="input-group"><label>User ID</label><input id="sess-user" placeholder="e.g. user1"></div>
+              <div class="form-grid cols-2">
+                <div class="input-group"><label>IP Address</label><input id="sess-ip" placeholder="192.168.1.1" value="192.168.1.1"></div>
+                <div class="input-group"><label>Device</label><select id="sess-device"><option>desktop</option><option>mobile</option><option>tablet</option></select></div>
+              </div>
+            </div>
+            <div class="btn-row"><button class="btn btn-success" onclick="createSession()">Create</button></div>
+          </div>
+        </div>
+        <!-- Quick populate -->
+        <div style="margin-top:16px;padding-top:16px;border-top:1px solid var(--glass-border)">
+          <h3 style="font-size:.85rem;font-weight:600;color:var(--text-secondary);margin-bottom:10px">Quick Actions</h3>
+          <div class="btn-row">
+            <button class="btn btn-amber" onclick="populateDemo()">🎲 Populate Demo Data</button>
+            <button class="btn btn-primary" onclick="lookupPlayer()">🔍 Lookup Player</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Right: Live Feed + Player Lookup -->
+    <div style="display:flex;flex-direction:column;gap:20px">
+      <!-- Player lookup result -->
+      <div class="card" id="player-card" style="display:none">
+        <div class="card-title"><span class="icon">👤</span> Player Info</div>
+        <div id="player-info"></div>
+      </div>
+      <!-- Live events -->
+      <div class="card">
+        <div class="card-title"><span class="icon">📡</span> Live Event Feed</div>
+        <div class="event-feed" id="event-feed">
+          <div class="empty-state" id="event-empty">Listening for events…</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="toast-container" id="toast-container"></div>
+
+<script>
+const API = '';
+let eventCount = 0;
+let sessionCount = 0;
+let prevScores = {};
+const avatarColors = ['#6366f1','#8b5cf6','#06b6d4','#10b981','#f59e0b','#ef4444','#ec4899','#14b8a6','#f97316','#3b82f6'];
+
+// ---- Toast ----
+function toast(msg, type='info') {
+  const c = document.getElementById('toast-container');
+  const t = document.createElement('div');
+  t.className = 'toast ' + type;
+  t.textContent = msg;
+  c.appendChild(t);
+  setTimeout(() => { t.style.opacity='0'; t.style.transform='translateY(12px)'; setTimeout(() => t.remove(), 300); }, 3000);
+}
+
+// ---- API helpers ----
+async function api(url, opts) {
+  const res = await fetch(API + url, { headers: { 'Content-Type': 'application/json' }, ...opts });
+  if (!res.ok && res.status !== 204) { const e = await res.json().catch(() => ({})); throw new Error(e.error || 'Request failed'); }
+  if (res.status === 204) return {};
+  return res.json();
+}
+
+// ---- Leaderboard ----
+async function refreshLeaderboard() {
+  try {
+    const data = await api('/api/leaderboard/top/20');
+    const body = document.getElementById('leaderboard-body');
+    if (!data.length) { body.innerHTML = '<div class="empty-state">No players yet — add scores below!</div>'; updateStats(0, 0); return; }
+    const newScores = {};
+    data.forEach(p => { newScores[p.playerId] = p.score; });
+    body.innerHTML = data.map((p, i) => {
+      const rank = i + 1;
+      const rc = rank === 1 ? 'gold' : rank === 2 ? 'silver' : rank === 3 ? 'bronze' : '';
+      const color = avatarColors[p.playerId.charCodeAt(p.playerId.length - 1) % avatarColors.length];
+      const initials = p.playerId.slice(0, 2).toUpperCase();
+      const diff = prevScores[p.playerId] !== undefined ? p.score - prevScores[p.playerId] : 0;
+      const changeClass = diff > 0 ? 'up' : diff < 0 ? 'down' : '';
+      const changeText = diff > 0 ? '+' + diff : diff < 0 ? '' + diff : '—';
+      return `<div class="lb-row"><div class="lb-rank ${rc}">#${rank}</div><div class="lb-name"><div class="lb-avatar" style="background:${color}">${initials}</div>${p.playerId}</div><div class="lb-score">${p.score.toLocaleString()}</div><div class="lb-change ${changeClass}">${changeText}</div></div>`;
+    }).join('');
+    prevScores = newScores;
+    updateStats(data.length, data[0].score);
+  } catch (e) { console.error(e); }
+}
+
+function updateStats(players, topScore) {
+  document.getElementById('stat-players').textContent = players;
+  document.getElementById('stat-top-score').textContent = topScore.toLocaleString();
+  document.getElementById('stat-events').textContent = eventCount;
+  document.getElementById('stat-sessions').textContent = sessionCount;
+}
+
+// ---- Submit Score ----
+async function submitScore() {
+  const playerId = document.getElementById('score-player').value.trim();
+  const points = parseInt(document.getElementById('score-points').value);
+  if (!playerId) { toast('Enter a player ID', 'error'); return; }
+  if (isNaN(points)) { toast('Enter valid points', 'error'); return; }
+  try {
+    await api('/api/leaderboard/scores', { method: 'POST', body: JSON.stringify({ playerId, points }) });
+    toast(`+${points} pts for ${playerId}`, 'success');
+    refreshLeaderboard();
+  } catch (e) { toast(e.message, 'error'); }
+}
+
+// ---- Create Session ----
+async function createSession() {
+  const userId = document.getElementById('sess-user').value.trim();
+  const ipAddress = document.getElementById('sess-ip').value.trim();
+  const deviceType = document.getElementById('sess-device').value;
+  if (!userId) { toast('Enter a user ID', 'error'); return; }
+  try {
+    const r = await api('/api/sessions', { method: 'POST', body: JSON.stringify({ userId, ipAddress, deviceType }) });
+    sessionCount++;
+    toast(`Session created: ${r.sessionId?.slice(0, 8) || 'ok'}…`, 'success');
+    updateStats(parseInt(document.getElementById('stat-players').textContent), parseInt(document.getElementById('stat-top-score').textContent.replace(/,/g, '')));
+  } catch (e) { toast(e.message, 'error'); }
+}
+
+// ---- Lookup Player ----
+async function lookupPlayer() {
+  const playerId = document.getElementById('score-player').value.trim();
+  if (!playerId) { toast('Enter player ID in the score field', 'error'); return; }
+  try {
+    const p = await api(`/api/leaderboard/player/${playerId}`);
+    const card = document.getElementById('player-card');
+    card.style.display = 'block';
+    document.getElementById('player-info').innerHTML = `
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+        <div class="stat-card"><div class="stat-value" style="font-size:1.3rem">${p.playerId}</div><div class="stat-label">Player</div></div>
+        <div class="stat-card"><div class="stat-value" style="font-size:1.3rem;color:var(--green)">${(p.score||0).toLocaleString()}</div><div class="stat-label">Score</div></div>
+        <div class="stat-card"><div class="stat-value" style="font-size:1.3rem;color:var(--accent)">#${p.rank||'?'}</div><div class="stat-label">Rank</div></div>
+        <div class="stat-card"><div class="stat-value" style="font-size:1.3rem;color:var(--cyan)">${p.totalGames||0}</div><div class="stat-label">Games</div></div>
+      </div>`;
+  } catch (e) { toast(e.message, 'error'); }
+}
+
+// ---- Demo Data ----
+async function populateDemo() {
+  const names = ['Phoenix','Shadow','Nova','Blaze','Frost','Echo','Viper','Titan','Luna','Storm','Raven','Orion','Zephyr','Drift','Surge'];
+  toast('Populating demo data…', 'info');
+  for (const name of names) {
+    const pts = Math.floor(Math.random() * 500) + 50;
+    await api('/api/leaderboard/scores', { method: 'POST', body: JSON.stringify({ playerId: name, points: pts }) });
+  }
+  toast('Demo data added!', 'success');
+  refreshLeaderboard();
+}
+
+// ---- SSE ----
+function connectSSE() {
+  const es = new EventSource(API + '/api/events');
+  es.onmessage = (e) => {
+    try {
+      const data = JSON.parse(e.data);
+      addEvent(data.event || 'event', data.data || data);
+      refreshLeaderboard();
+    } catch {}
+  };
+  es.addEventListener('leaderboard_updated', (e) => {
+    try { addEvent('leaderboard_updated', JSON.parse(e.data)); refreshLeaderboard(); } catch {}
+  });
+  es.addEventListener('game_submission', (e) => {
+    try { addEvent('game_submission', JSON.parse(e.data)); refreshLeaderboard(); } catch {}
+  });
+  es.onerror = () => { setTimeout(connectSSE, 3000); es.close(); };
+}
+
+function addEvent(type, data) {
+  eventCount++;
+  const feed = document.getElementById('event-feed');
+  const empty = document.getElementById('event-empty');
+  if (empty) empty.remove();
+  const item = document.createElement('div');
+  item.className = 'event-item ' + type;
+  const summary = data.playerId ? `${data.playerId} → ${data.newScore || data.points || ''}` : JSON.stringify(data).slice(0, 80);
+  item.innerHTML = `<div class="event-type">${type.replace(/_/g, ' ')}</div><div class="event-body">${summary}</div><div class="event-time">${new Date().toLocaleTimeString()}</div>`;
+  feed.prepend(item);
+  if (feed.children.length > 50) feed.lastChild.remove();
+  document.getElementById('stat-events').textContent = eventCount;
+}
+
+// ---- Init ----
+refreshLeaderboard();
+connectSSE();
+setInterval(refreshLeaderboard, 10000);
+</script>
+</body>
+</html>

@@ -1,0 +1,49 @@
+version: "3.8"
+
+services:
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: game-api
+    ports:
+      - "3000:3000"
+    environment:
+      REDIS_URL: redis://redis:6379
+      API_PORT: 3000
+      NODE_ENV: development
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - game-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  redis:
+    image: redis:7-alpine
+    container_name: game-redis
+    ports:
+      - "6379:6379"
+    command: redis-server --appendonly yes
+    networks:
+      - game-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+    volumes:
+      - redis-data:/data
+
+volumes:
+  redis-data:
+
+networks:
+  game-network:
+    driver: bridge
